@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": ".qwencloud-deploy state file",
+  "description": "Deployment state written by qwencloud-deploy. Reused during deletion / redeployment / hot update.",
+  "type": "object",
+  "required": [
+    "version",
+    "region_id",
+    "topology",
+    "app_type",
+    "created_at",
+    "tags",
+    "outputs"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "deploy_mode": {
+      "type": "string",
+      "enum": [
+        "full-stack"
+      ],
+      "default": "full-stack",
+      "description": "Deployment mode: full-stack = ROS full-stack orchestration"
+    },
+    "stack_id": {
+      "type": "string",
+      "description": "ROS Stack ID"
+    },
+    "stack_name": {
+      "type": "string",
+      "description": "ROS Stack Name"
+    },
+    "region_id": {
+      "type": "string",
+      "examples": [
+        "ap-southeast-1",
+        "us-west-1"
+      ]
+    },
+    "topology": {
+      "type": "string",
+      "enum": [
+        "single"
+      ]
+    },
+    "app_type": {
+      "type": "string",
+      "enum": [
+        "frontend-only",
+        "docker",
+        "binary-go",
+        "binary-java",
+        "binary-node",
+        "binary-python"
+      ]
+    },
+    "frontend_dir": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Local frontend build artifact directory (relative to project root), null when no frontend"
+    },
+    "backend_dir": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Local backend directory or artifact directory"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "Key",
+          "Value"
+        ],
+        "properties": {
+          "Key": {
+            "type": "string"
+          },
+          "Value": {
+            "type": "string"
+          }
+        }
+      },
+      "contains": {
+        "type": "object",
+        "properties": {
+          "Key": {
+            "const": "from"
+          },
+          "Value": {
+            "const": "qwencloud"
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "required": [
+        "public_ip"
+      ],
+      "properties": {
+        "public_ip": {
+          "type": "string"
+        },
+        "ecs_instance_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "db_instance_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "RDS instance ID (present when RDS is included in deployment)"
+        },
+        "db_connection_address": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "RDS internal connection address"
+        },
+        "db_port": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "db_account": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "nginx_mode": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "static-proxy",
+        "proxy",
+        "static",
+        null
+      ],
+      "description": "Nginx hosting mode: static-proxy (static hosting + reverse proxy), proxy (full reverse proxy), static (pure static)"
+    },
+    "artifact_bucket": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Temporary OSS bucket used by this deployment (cleaned up together when deleting the stack)"
+    },
+    "db_engine": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "mysql",
+        null
+      ],
+      "description": "If RDS was provisioned with the deployment, records the engine type. Only MySQL is supported."
+    },
+    "domain": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Custom domain bound to this deployment (e.g. app.example.com). null if no domain configured."
+    },
+    "https": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "HTTPS/SSL certificate state. null if HTTPS not configured.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "nginx"
+          ],
+          "description": "nginx = cert on ECS Nginx"
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "letsencrypt"
+          ]
+        },
+        "domain": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string",
+          "description": "Email used for Let's Encrypt registration"
+        },
+        "cert_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Path to fullchain.pem on ECS (nginx mode)"
+        },
+        "key_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Path to privkey.pem on ECS (nginx mode)"
+        },
+        "cert_manager_instance_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ECS instance ID that manages certbot. Used for renewal."
+        },
+        "expiry": {
+          "type": "string",
+          "description": "Certificate expiry date"
+        },
+        "auto_renew": {
+          "type": "boolean",
+          "description": "Whether auto-renewal is configured (certbot cron on ECS)"
+        },
+        "configured_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "registrant_profile_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Alibaba Cloud domain registrant profile ID (reused across deployments). null if no domain purchased."
+    },
+    "notes": {
+      "type": "string"
+    },
+    "provisional": {
+      "type": "boolean",
+      "description": "true indicates this is a temporary state written by create_stack.sh immediately after obtaining the StackId (contains only stack_id / stack_name / region_id locator fields, may lack topology / app_type / outputs). Used so that delete_stack.sh can still clean up after interruption; record_state.py will overwrite with the complete state and remove this field upon success."
+    },
+    "updated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "Timestamp of the most recent hot update (written by update_app.sh). null after initial deployment."
+    }
+  }
+}
