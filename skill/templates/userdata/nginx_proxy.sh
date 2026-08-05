@@ -1,8 +1,8 @@
 #!/bin/bash
-# qwencloud · Nginx full reverse proxy to backend (for Flask/Django/Express SSR and other server-rendered apps)
+# qwencloud · Nginx full reverse proxy to app (for Flask/Django/Express SSR and other server-rendered apps)
 # This snippet is injected into ECS UserData header by generate_template.py.
 # Placeholders (replaced by generate_template.py):
-#   __BACKEND_PORT__           Backend service listening port (e.g. 5000)
+#   __APP_PORT__           App service listening port (e.g. 5000)
 set -euxo pipefail
 
 LOG=/var/log/qwencloud-bootstrap.log
@@ -18,14 +18,14 @@ if ! command -v nginx >/dev/null 2>&1; then
   fi
 fi
 
-# 2. Write site config: all requests reverse-proxied to backend
+# 2. Write site config: all requests reverse-proxied to app
 cat > /etc/nginx/conf.d/qwencloud.conf <<NGINX
 server {
     listen 80 default_server;
     server_name _;
 
     location / {
-        proxy_pass http://127.0.0.1:__BACKEND_PORT__;
+        proxy_pass http://127.0.0.1:__APP_PORT__;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;

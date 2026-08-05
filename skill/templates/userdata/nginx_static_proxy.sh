@@ -1,9 +1,9 @@
 #!/bin/bash
-# qwencloud · Nginx static hosting + /api/ reverse proxy to backend
+# qwencloud · Nginx static hosting + /api/ reverse proxy to app
 # This snippet is injected into ECS UserData header by generate_template.py.
 # Placeholders (replaced by generate_template.py):
-#   __FRONTEND_ARTIFACT_URL__  OSS signed URL of frontend dist archive (http GET)
-#   __BACKEND_PORT__           Backend service listening port (e.g. 8080)
+#   __STATIC_ARTIFACT_URL__  OSS signed URL of static dist archive (http GET)
+#   __APP_PORT__           App service listening port (e.g. 8080)
 set -euxo pipefail
 
 LOG=/var/log/qwencloud-bootstrap.log
@@ -19,27 +19,27 @@ if ! command -v nginx >/dev/null 2>&1; then
   fi
 fi
 
-# 2. Pull frontend build artifacts (if any)
-# Note: FRONTEND_URL is replaced by generate_template.py before packaging: real signed URL if artifacts exist, empty string if no frontend
-FRONTEND_URL='__FRONTEND_ARTIFACT_URL__'
-mkdir -p /var/www/frontend
-if [ -n "$FRONTEND_URL" ]; then
-  curl -fsSL "$FRONTEND_URL" -o /tmp/frontend.tar.gz
-  tar -xzf /tmp/frontend.tar.gz -C /var/www/frontend --strip-components=0
-  rm -f /tmp/frontend.tar.gz
+# 2. Pull static build artifacts (if any)
+# Note: STATIC_URL is replaced by generate_template.py before packaging: real signed URL if artifacts exist, empty string if no static
+STATIC_URL='__STATIC_ARTIFACT_URL__'
+mkdir -p /var/www/static
+if [ -n "$STATIC_URL" ]; then
+  curl -fsSL "$STATIC_URL" -o /tmp/static.tar.gz
+  tar -xzf /tmp/static.tar.gz -C /var/www/static --strip-components=0
+  rm -f /tmp/static.tar.gz
 else
-  cat > /var/www/frontend/index.html <<'HTML'
+  cat > /var/www/static/index.html <<'HTML'
 <!doctype html><meta charset=utf-8><title>qwencloud</title>
-<h1>ECS is up. Awaiting frontend artifact.</h1>
+<h1>ECS is up. Awaiting static artifact.</h1>
 HTML
 fi
 
-# 3. Write site config: port 80 root points to frontend, /api/ reverse-proxies to backend
+# 3. Write site config: port 80 root points to static, /api/ reverse-proxies to app
 cat > /etc/nginx/conf.d/qwencloud.conf <<NGINX
 server {
     listen 80 default_server;
     server_name _;
-    root /var/www/frontend;
+    root /var/www/static;
     index index.html;
 
     location / {
@@ -47,7 +47,7 @@ server {
     }
 
     location /api/ {
-        proxy_pass http://127.0.0.1:__BACKEND_PORT__;
+        proxy_pass http://127.0.0.1:__APP_PORT__;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;

@@ -1,8 +1,8 @@
 #!/bin/bash
-# qwencloud · Nginx pure static hosting (no backend reverse proxy)
+# qwencloud · Nginx pure static hosting (no app reverse proxy)
 # This snippet is injected into ECS UserData header by generate_template.py.
 # Placeholders (replaced by generate_template.py):
-#   __FRONTEND_ARTIFACT_URL__  OSS signed URL of frontend dist archive (http GET)
+#   __STATIC_ARTIFACT_URL__  OSS signed URL of static dist archive (http GET)
 set -euxo pipefail
 
 LOG=/var/log/qwencloud-bootstrap.log
@@ -18,26 +18,26 @@ if ! command -v nginx >/dev/null 2>&1; then
   fi
 fi
 
-# 2. Pull frontend build artifacts (if any)
-FRONTEND_URL='__FRONTEND_ARTIFACT_URL__'
-mkdir -p /var/www/frontend
-if [ -n "$FRONTEND_URL" ]; then
-  curl -fsSL "$FRONTEND_URL" -o /tmp/frontend.tar.gz
-  tar -xzf /tmp/frontend.tar.gz -C /var/www/frontend --strip-components=0
-  rm -f /tmp/frontend.tar.gz
+# 2. Pull static build artifacts (if any)
+STATIC_URL='__STATIC_ARTIFACT_URL__'
+mkdir -p /var/www/static
+if [ -n "$STATIC_URL" ]; then
+  curl -fsSL "$STATIC_URL" -o /tmp/static.tar.gz
+  tar -xzf /tmp/static.tar.gz -C /var/www/static --strip-components=0
+  rm -f /tmp/static.tar.gz
 else
-  cat > /var/www/frontend/index.html <<'HTML'
+  cat > /var/www/static/index.html <<'HTML'
 <!doctype html><meta charset=utf-8><title>qwencloud</title>
-<h1>ECS is up. Awaiting frontend artifact.</h1>
+<h1>ECS is up. Awaiting static artifact.</h1>
 HTML
 fi
 
-# 3. Write site config: pure static hosting, no backend reverse proxy
+# 3. Write site config: pure static hosting, no app reverse proxy
 cat > /etc/nginx/conf.d/qwencloud.conf <<NGINX
 server {
     listen 80 default_server;
     server_name _;
-    root /var/www/frontend;
+    root /var/www/static;
     index index.html;
 
     location / {

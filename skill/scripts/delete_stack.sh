@@ -1,14 +1,8 @@
 #!/usr/bin/env bash
-# Cleanup deployment resources: full stack destruction (DeleteStack + clean OSS + delete state files)
-#
-# Automatically reads stack_id / region_id / artifact_bucket from .qwencloud-deploy in the project root.
-# After deletion completes, cleans up .qwencloud-deploy(.local).
-#
-# Usage:
-#   ./delete_stack.sh [--project-root .] [--yes]
-#
-# --yes: Skip interactive confirmation (Agent should have already confirmed with user via AskUserQuestion)
+# Full stack destruction: DeleteStack + clean OSS + remove state. See reference/cleanup/delete_stack.md
+# Usage: ./delete_stack.sh [--project-root .] [--yes]
 set -uo pipefail
+
 
 ROOT="."
 ASSUME_YES=0
@@ -74,55 +68,74 @@ if [ "$ASSUME_YES" -ne 1 ]; then
   [ "$ANS" = "DELETE" ] || { echo "Cancelled" >&2; exit 1; }
 fi
 
-# DeleteStack
-  OUT=$(aliyun ros DeleteStack --RegionId "$REGION" --StackId "$SID" 2>&1)
-  CODE=$?
-  if [ $CODE -ne 0 ]; then
-    if echo "$OUT" | grep -qiE 'StackNotFound|404'; then
-      echo "[delete] Stack already does not exist"
-    else
-      echo "[delete] DeleteStack failed: $OUT" >&2
-      exit $CODE
-    fi
-  fi
-
-  # 2) Poll until 404 (extend to 60 minutes when RDS is included)
-  DELETE_TIMEOUT_MIN=30
-  [ -n "$DB_ENGINE" ] && DELETE_TIMEOUT_MIN=60
-  DEADLINE=$(( $(date +%s) + DELETE_TIMEOUT_MIN * 60 ))
-  while :; do
-    if [ $(date +%s) -gt $DEADLINE ]; then
-      echo "[delete] Timed out waiting for deletion (${DELETE_TIMEOUT_MIN}m). Please check in console." >&2
-      exit 2
-    fi
-    OUT=$(aliyun ros GetStack --RegionId "$REGION" --StackId "$SID" 2>&1)
-    if echo "$OUT" | grep -qiE 'StackNotFound|404'; then
-      echo "[delete] Stack DELETE_COMPLETE"
-      break
-    fi
-    STATUS=$(echo "$OUT" | python3 -c "import json,sys;print(json.load(sys.stdin).get('Status',''))" 2>/dev/null || echo "?")
-    echo "[delete] $(date -u +%H:%M:%S) Status=$STATUS"
-    if [ "$STATUS" = "DELETE_COMPLETE" ]; then
-      echo "[delete] Stack DELETE_COMPLETE"
-      break
-    fi
-    if [ "$STATUS" = "DELETE_FAILED" ]; then
-      echo "$OUT" >&2
-      echo "[delete] DeleteStack failed, please clean up manually in console" >&2
-      exit 2
-    fi
-    sleep 10
-  done
-
-# 3) Clean up OSS temporary bucket
-if [ -n "$BUCKET" ]; then
+# The OSS staging bucket is a separate resource from the stack: even when stack
+# deletion fails or times out we should still try to clean it, otherwise the user
+# is left thinking things are half-deleted without knowing to come back.
+cleanup_bucket() {
+  [ -n "$BUCKET" ] || return 0
   echo "[delete] Cleaning OSS bucket $BUCKET"
   if ! aliyun oss rm "oss://$BUCKET" -r -f >/dev/null 2>&1 \
      || ! aliyun oss rm "oss://$BUCKET" -b -f >/dev/null 2>&1; then
     echo "[delete] Warning: OSS bucket $BUCKET was not fully cleaned. The bucket has a 7-day auto-expiration lifecycle and won't incur ongoing charges;" >&2
     echo "         to delete immediately, clean up manually in OSS console." >&2
+    return 1
+  fi
+  return 0
+}
+
+# Single exit path for "stack not fully deleted": clean the bucket first, then
+# spell out what is left and what to do next, and keep the state file so this
+# script can simply be re-run.
+abort_unfinished() {
+  local reason="$1"
+  echo "[delete] $reason" >&2
+  cleanup_bucket || true
+  echo "[delete] Stack $NAME ($SID) @ $REGION is not confirmed deleted; local state file $STATE was kept." >&2
+  [ -n "$DOMAIN" ] && echo "[delete] DNS A record for $DOMAIN was left in place (removed once the stack is gone)." >&2
+  echo "[delete] Next: re-run ./delete_stack.sh --project-root \"$ROOT\" later," >&2
+  echo "         or inspect the stack in the ROS console: https://ros.console.aliyun.com/" >&2
+  exit 2
+}
+
+# 1) DeleteStack
+OUT=$(aliyun ros DeleteStack --RegionId "$REGION" --StackId "$SID" 2>&1)
+CODE=$?
+if [ $CODE -ne 0 ]; then
+  if echo "$OUT" | grep -qiE 'StackNotFound|404'; then
+    echo "[delete] Stack already does not exist"
+  else
+    abort_unfinished "DeleteStack failed: $OUT"
   fi
 fi
+
+# 2) Poll until 404 (extend to 45 minutes when RDS is included)
+DELETE_TIMEOUT_MIN=20
+[ -n "$DB_ENGINE" ] && DELETE_TIMEOUT_MIN=45
+DEADLINE=$(( $(date +%s) + DELETE_TIMEOUT_MIN * 60 ))
+while :; do
+  if [ "$(date +%s)" -gt $DEADLINE ]; then
+    abort_unfinished "Timed out waiting for deletion (${DELETE_TIMEOUT_MIN}m). Deletion may still be running in the background."
+  fi
+  OUT=$(aliyun ros GetStack --RegionId "$REGION" --StackId "$SID" 2>&1)
+  if echo "$OUT" | grep -qiE 'StackNotFound|404'; then
+    echo "[delete] Stack DELETE_COMPLETE"
+    break
+  fi
+  STATUS=$(echo "$OUT" | python3 -c "import json,sys;print(json.load(sys.stdin).get('Status',''))" 2>/dev/null || echo "?")
+  echo "[delete] $(date -u +%H:%M:%S) Status=$STATUS"
+  if [ "$STATUS" = "DELETE_COMPLETE" ]; then
+    echo "[delete] Stack DELETE_COMPLETE"
+    break
+  fi
+  if [ "$STATUS" = "DELETE_FAILED" ]; then
+    echo "$OUT" >&2
+    abort_unfinished "DeleteStack failed (DELETE_FAILED); please clean up leftover resources in the console."
+  fi
+  sleep 10
+done
+
+# 3) Clean up OSS temporary bucket
+cleanup_bucket || true
 
 # 4) Clean up DNS record (if domain was configured)
 if [ -n "$DOMAIN" ]; then

@@ -49,14 +49,15 @@ Specific requirements:
 
 Trigger the reminder at these points:
 
-1. **After step 3 (project analysis)**: If `analyze_project.py`'s `env_files` / `source_samples` / `config_files`
+1. **After step 3 (project analysis)**: If the project analysis (see `reference/deploy/03_analyze_project.md`)
+   surfaces env files / source samples / config files that
    contain suspected hardcoded keys, tokens, connection strings, or other sensitive content (e.g., `sk-xxx`, `AKID`,
    `password=`, `jdbc:mysql://user:pass@`), the Agent must immediately warn the user:
    > ⚠️ Potential hardcoded sensitive information detected in the project (e.g., API keys, database passwords). These
    may be exposed once deployed to a public network. Please confirm:
    > - Keys/tokens in source code have been moved to environment variables or `.env` files (not committed to git)
    > - `.env`, `config/secrets.*` and other sensitive files have been added to `.gitignore`
-   > - Frontend code does not contain API keys that should not be public (frontend code is visible to users)
+   > - Static code does not contain API keys that should not be public (static code is visible to users)
 
 2. **General principle**:
     - Whenever files are uploaded to a publicly accessible location (ECS Nginx static directory), the Agent must confirm
@@ -82,8 +83,8 @@ Display format example:
 Rules:
 
 - Update progress for the user each time a step is completed or skipped
-- Skip reasons must be concise (e.g., "local project", "no database dependency", "not a Git URL", "frontend-only, no
-  backend")
+- Skip reasons must be concise (e.g., "local project", "no database dependency", "not a Git URL", "static-only, no
+  app")
 - Do not omit skipped step numbers — keep numbering sequential to avoid user confusion from seeing 1→3→6
 - At key checkpoints (e.g., before step 9 cost confirmation), display a summary of all step statuses
 
@@ -140,7 +141,7 @@ When the skill is triggered, the following must be displayed in full before exec
 > **⏰ Patience Note** — Full-stack deployment typically takes 5–15 minutes (with RDS, possibly 20–30 minutes). If minor
 > issues occur along the way, I'll attempt automatic fixes — please be patient and don't worry about retry messages.
 >
-> **🔒 Credential Security** — AK/SK and server passwords are stored only in local files; they will not be transmitted
+> **🔒 Credential Security** — OAuth authorization is completed in a browser; server passwords are stored only in local files; they will not be transmitted
 > externally or appear in chat.
 
 Confirm via AskUserQuestion: **Got it, start deployment** / **Not now**.
@@ -305,7 +306,6 @@ AskUserQuestion: **I've seen the price, proceed** / **Try a different name** / *
 >
 > **Certificate**: Let's Encrypt (free, valid 90 days, does not auto-renew). Remember to renew before expiry.
 >
-> ⚠️ **CORS**: Your access URL has changed from `http://<IP>` to `https://<domain>`. If your backend has cross-origin
+> ⚠️ **CORS**: Your access URL has changed from `http://<IP>` to `https://<domain>`. If your app has cross-origin
 > restrictions, remember to add the new URL to your allowed origins.
-
 

@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""
-Write .qwencloud-deploy state file (project root directory).
-Schema: see reference/deploy_state_schema.json.
-
-Usage (full-stack deployment):
-  python record_state.py \
-    --stack-id <id> --stack-name <name> --region ap-southeast-1 \
-    --topology single --app-type docker \
-    --outputs-json '{"PublicIp":"47.x.x.x","EcsInstanceIds":"i-xxx",
-                     "DbInstanceId":"rm-xxx","DbConnectionAddress":"rm-xxx.mysql.rds.aliyuncs.com",
-                     "DbPort":"3306","DbAccount":"appuser"}' \
-    [--artifact-bucket qwencloud-deploy-tmp-xxx] \
-    [--frontend-dir dist] [--backend-dir backend] \
-    [--with-rds] [--db-engine mysql]
-
-Passwords are passed via environment variables (not command line, to avoid leaking plaintext in `ps` process list):
-  PASSWORD      ECS login password -> written to .qwencloud-deploy.local
-  DB_PASSWORD   RDS account password -> written to .qwencloud-deploy.local (when RDS is included)
-
-Output: .qwencloud-deploy path
-"""
+"""Write .qwencloud-deploy state file. See reference/deploy/13_record_state.md"""
 from __future__ import annotations
 
 import argparse
@@ -28,6 +8,23 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _ensure_gitignore(root: Path, *entries: str) -> None:
+    """Ensure .gitignore contains the given entries (idempotent)."""
+    gi = root / ".gitignore"
+    existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
+    lines = existing.splitlines()
+    changed = False
+    for entry in entries:
+        if entry not in lines:
+            lines.append(entry)
+            changed = True
+    if changed:
+        content = "\n".join(lines)
+        if not content.endswith("\n"):
+            content += "\n"
+        gi.write_text(content, encoding="utf-8")
 
 
 def main():
@@ -39,12 +36,20 @@ def main():
     ap.add_argument("--region", required=True)
     ap.add_argument("--topology", default="single", choices=["single"])
     ap.add_argument("--app-type", required=True)
+    ap.add_argument("--runtime", default=None,
+                    help="Runtime type (none/java/node/python), used for hot update dependency installation")
+    ap.add_argument("--app-mode", default=None, choices=["docker-image", "docker-compose"],
+                    help="Docker deployment mode (docker-image/docker-compose); hot update uses it to pick docker load vs compose up")
+    ap.add_argument("--app-image-name", default=None,
+                    help="Image name:tag after docker load in docker-image mode; used when rebuilding the container on hot update")
+    ap.add_argument("--app-port", type=int, default=None,
+                    help="App listening port (reverse-proxied by Nginx); used by hot update health check and docker run port mapping")
     ap.add_argument("--outputs-json", required=True,
                     help='ROS GetStack Outputs serialized as {"Key": "Value"} JSON')
     ap.add_argument("--artifact-bucket", default=None)
-    ap.add_argument("--frontend-dir", default=None)
-    ap.add_argument("--backend-dir", default=None)
-    ap.add_argument("--nginx-mode", default=None, choices=["static-proxy", "proxy", "static"])
+    ap.add_argument("--static-dir", default=None)
+    ap.add_argument("--app-dir", default=None)
+    ap.add_argument("--nginx-mode", default=None, choices=["static+app", "proxy", "static"])
     ap.add_argument("--with-rds", action="store_true")
     ap.add_argument("--db-engine", default=None, choices=["mysql"])
     ap.add_argument("--artifact-urls-json", default=None,
@@ -78,8 +83,9 @@ def main():
         "region_id": args.region,
         "topology": args.topology,
         "app_type": args.app_type,
-        "frontend_dir": args.frontend_dir,
-        "backend_dir": args.backend_dir,
+        "runtime": args.runtime,
+        "static_dir": args.static_dir,
+        "app_dir": args.app_dir,
         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "tags": [{"Key": "from", "Value": "qwencloud"}],
         "outputs": {
@@ -94,6 +100,13 @@ def main():
         "artifact_bucket": args.artifact_bucket,
         "notes": args.notes,
     }
+    # Fields required for Docker hot update: only meaningful for docker deployments,
+    # so avoid polluting state files of other app_types.
+    if args.app_type == "docker":
+        state["app_mode"] = args.app_mode or "docker-image"
+        state["app_image_name"] = args.app_image_name or "qwencloud-app:latest"
+    if args.app_port is not None:
+        state["app_port"] = args.app_port
     if args.stack_id:
         state["stack_id"] = args.stack_id
     if args.stack_name:
@@ -110,6 +123,11 @@ def main():
     root = Path(args.project_root).resolve()
     state_path = root / ".qwencloud-deploy"
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    # State file holds current_artifact_urls (OSS signed URLs == download creds); 0600.
+    os.chmod(state_path, 0o600)
+    # Always add the main state file to .gitignore (even without a password file):
+    # signed URLs must not be committed.
+    _ensure_gitignore(root, ".qwencloud-deploy")
 
     if ecs_password or db_password:
         local_path = root / ".qwencloud-deploy.local"
@@ -124,20 +142,7 @@ def main():
         os.chmod(local_path, 0o600)
 
         # Append to .gitignore
-        gi = root / ".gitignore"
-        existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
-        lines = existing.splitlines()
-        changed = False
-        for entry in (".qwencloud-deploy.local",):
-            if entry not in lines:
-                lines.append(entry)
-                changed = True
-        if changed:
-            content = "\n".join(lines)
-            if not content.endswith("\n"):
-                content += "\n"
-            gi.write_text(content, encoding="utf-8")
-    # If neither password was provided, preserve old behavior: don't write .local, don't touch .gitignore
+        _ensure_gitignore(root, ".qwencloud-deploy.local")
 
     print(str(state_path))
 

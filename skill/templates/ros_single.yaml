@@ -1,5 +1,5 @@
 ROSTemplateFormatVersion: '2015-09-01'
-Description: 'qwencloud single-host deployment: 1 ECS + EIP + VPC + SecurityGroup. Frontend Nginx + backend service co-located on one VM.'
+Description: 'qwencloud single-host deployment: 1 ECS + EIP + VPC + SecurityGroup. Static hosting + app service co-located on one VM.'
 
 Parameters:
   AppName:
@@ -28,11 +28,11 @@ Parameters:
     MaxValue: 500
   ZoneId:
     Type: String
-    Description: Availability zone ID (select a zone with stock from check_stock.sh output)
-  BackendPort:
+    Description: Availability zone ID (select a zone with stock from the stock check, see reference/deploy/08_check_stock.md)
+  AppPort:
     Type: Number
     Default: 8080
-    Description: Backend service listening port (reverse-proxied by Nginx to /api/)
+    Description: App service listening port (reverse-proxied by Nginx to /api/)
   UserDataScript:
     Type: String
     Description: Bootstrap script (plaintext, ROS will auto base64-encode it)
@@ -76,12 +76,6 @@ Resources:
       VpcId:
         Ref: Vpc
       SecurityGroupIngress:
-        # WARNING: SSH is open to the public internet; after deployment, consider restricting to specific IPs or VPN CIDR
-        - PortRange: 22/22
-          Priority: 1
-          IpProtocol: tcp
-          SourceCidrIp: 0.0.0.0/0
-          NicType: intranet
         - PortRange: 80/80
           Priority: 1
           IpProtocol: tcp
@@ -156,7 +150,7 @@ Resources:
 
 Outputs:
   PublicIp:
-    Description: Public access IP (frontend http://<IP>/, backend http://<IP>/api/)
+    Description: Public access IP (static http://<IP>/, app http://<IP>/api/)
     Value:
       Fn::GetAtt:
         - Eip

@@ -4,15 +4,15 @@
 
 | Symptom                               | Cause                                      | Resolution                                                                    |
 |---------------------------------------|--------------------------------------------|-------------------------------------------------------------------------------|
-| `check_env.sh` exit code 2            | CLI not installed / version too old        | `brew install aliyun-cli`                                                     |
-| `check_env.sh` exit code 3            | Invalid credentials                        | Run `aliyun configure` in a separate terminal                                 |
-| `check_env.sh` exit code 6            | AK identity probe failed                   | Check AK status in RAM console                                                |
+| Env check: CLI not installed / too old | `aliyun version` fails                     | Tell user to install: https://www.alibabacloud.com/help/en/cli/install-update-alibaba-cloud-cli |
+| Env check: Invalid credentials         | `configure list` shows no Valid profile    | Follow `reference/deploy/01_env_check.md` Auth Flow to re-login                         |
+| Env check: Identity probe failed       | `GetCallerIdentity` errors                 | Authorization may have expired; go back to Auth Flow and re-login              |
 | `InvalidTemplate`                     | YAML syntax error                          | Read Message and fix template                                                 |
 | `InsufficientStock`                   | Out of stock                               | Provide 2-3 alternatives (larger instance type / different region)            |
 | `InvalidParameter`                    | Password doesn't meet requirements         | Regenerate a strong password                                                  |
 | Stack rollback `ROLLBACK_COMPLETE`    | Resource creation failed                   | Use `ListStackResources` to locate the failed resource                        |
-| Health check fails but stack succeeds | UserData hasn't finished / app not started | Check `/var/log/qwencloud-bootstrap.log`                                      |
-| `/healthz` passes but `/` returns 502 | Backend crashed, Nginx masking the failure | Check `/var/log/qwencloud-app.log`                                            |
+| Nginx health check fails but stack succeeds | UserData hasn't finished / Nginx broken | Check `/var/log/qwencloud-bootstrap.log`                                |
+| Nginx up but app not started (`app: "manual"` unverified) | App crashed / not started yet | Check `/var/log/qwencloud-app.log` via Cloud Assistant                 |
 | `DELETE_FAILED`                       | Resource occupied externally               | Manual cleanup via ROS console                                                |
 | Password lost                         | `.local` file accidentally deleted         | Reset password via ECS/RDS console                                            |
 | RunCommand timeout                    | Cloud Assistant not responding             | Check ECS status and `DescribeCloudAssistantStatus`                           |
@@ -23,7 +23,7 @@
 | Certbot DNS-01 TXT not found          | TXT record not yet propagated              | Wait longer (up to 5min), verify with `dig +short _acme-challenge.DOMAIN TXT` |
 | Certbot "too many failed auth"        | Rate limited by Let's Encrypt              | Wait 1 hour, then retry                                                       |
 | RDS `InvalidDBInstanceClass`          | Instance class unavailable                 | Check available classes in RDS console                                        |
-| RDS availability zone not supported   | ECS has stock but RDS doesn't              | Re-run `check_stock.sh` with `DB_INSTANCE_CLASS`                              |
+| RDS availability zone not supported   | ECS has stock but RDS doesn't              | Re-run the stock check (see `reference/deploy/08_check_stock.md`) with `DB_INSTANCE_CLASS` to validate the RDS zone |
 | `QuotaExceed.Instance`                | Quota full                                 | Clean up idle instances or request quota increase                             |
 
 ## Constraints
@@ -31,7 +31,7 @@
 **Templates & API**:
 
 - ROS must use `--TemplateURL` (`--TemplateBody` is blocked by WAF)
-- Availability zone must be obtained from `check_stock.sh`
+- Availability zone must come from the stock check (see `reference/deploy/08_check_stock.md`; the Agent calls `DescribeAvailableResource` directly)
 - `DisableRollback=false` and `from=qwencloud` tag are mandatory
 - Never skip `ValidateTemplate`
 
@@ -46,8 +46,7 @@
 
 **Health Check**:
 
-- `/healthz` only proves Nginx is alive, not the backend — health check must pass both gates
-- Do not guess API route prefixes
+- `/healthz` only proves Nginx is alive; app liveness is verified separately by reading its log via Cloud Assistant (not HTTP-probed)
 
 **RDS**:
 
@@ -61,3 +60,39 @@
 - Full-stack uses pay-as-you-go only; subscription (prepaid) not supported
 - HTTPS always uses DNS-01 validation (TXT record based)
 - Single region
+## Server Troubleshooting Reference
+
+How to debug ECS issues via Cloud Assistant RunCommand when health checks fail.
+
+## Server Troubleshooting (verify the app via logs)
+
+Two logs to check: `/var/log/qwencloud-bootstrap.log` (UserData bootstrap process), `/var/log/qwencloud-app.log`
+(application stdout/stderr).
+
+### Cloud Assistant RunCommand
+
+ECS has a built-in Cloud Assistant — run shell commands directly on the instance:
+
+```bash
+# 1. Execute (PlainText — do NOT base64-encode CommandContent)
+CID=$(PAGER=cat aliyun ecs RunCommand \
+  --RegionId "$REGION" --InstanceId.1 "$INSTANCE_ID" --Type RunShellScript \
+  --Timeout 60 --ContentEncoding PlainText \
+  --CommandContent 'systemctl status qwencloud-app --no-pager; echo ---; tail -n 100 /var/log/qwencloud-app.log' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["InvokeId"])')
+
+# 2. Get results (async, poll until Finished)
+sleep 8
+PAGER=cat aliyun ecs DescribeInvocations --RegionId "$REGION" --InvokeId "$CID" --IncludeOutput true \
+  | python3 -c 'import sys,json,base64; d=json.load(sys.stdin); r=d["Invocations"]["Invocation"][0]["InvokeInstances"]["InvokeInstance"][0]; print(base64.b64decode(r["Output"]).decode())'
+```
+
+> ⚠️ **Do NOT base64-encode `--CommandContent`**. Despite some documentation examples,
+> Cloud Assistant with `--ContentEncoding PlainText` (default) expects a raw shell script
+> string. Base64-encoded content will be executed literally as garbled commands.
+
+`<ECS_INSTANCE_ID>` is from `ListStackResources` where `ResourceType=ALIYUN::ECS::Instance` → `PhysicalResourceId`.
+Troubleshoot → edit config → `systemctl restart qwencloud-app` → re-read the app log to confirm it started — all via RunCommand.
+
+> ⚠️ `aliyun` CLI **does not have a `--no-pager` argument** (passing it will cause an error). In non-interactive
+> environments, use `PAGER=cat aliyun ...` to disable paging.

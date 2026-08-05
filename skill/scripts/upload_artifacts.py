@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""
-Package local build artifacts (frontend dist + backend docker image / binary etc.) and upload to a temporary OSS bucket,
-then generate 24h-valid signed URLs for ECS UserData to pull.
-
-Bucket named like `qwencloud-deploy-tmp-<6-char-random>`, with `from=qwencloud` tag,
-and a 7-day expiration lifecycle (to prevent forgotten cleanup costs).
-
-Usage:
-  python upload_artifacts.py \
-    --region ap-southeast-1 \
-    --frontend-dir dist \
-    --backend-mode docker-image \
-    --backend-dir backend \
-    --backend-image-name myapp:latest \
-    [--bucket qwencloud-deploy-tmp-abc123]   # Reuse existing bucket; creates new if not provided
-
-Output (stdout, one line JSON):
-  {"bucket": "...", "frontend_url": "...|null", "backend_url": "...|null"}
-"""
+"""Upload artifacts to OSS temp bucket + generate signed URLs. See reference/deploy/10_upload_artifacts.md"""
 from __future__ import annotations
 
 import argparse
@@ -32,13 +14,11 @@ import time
 import uuid
 from pathlib import Path
 
-
 def _ts_key(name: str) -> str:
-    """Generate timestamped object key, e.g. frontend-20260703-113500.tar.gz, ensuring each upload does not overwrite previous versions."""
+    """Generate timestamped object key, e.g. static-20260703-113500.tar.gz, ensuring each upload does not overwrite previous versions."""
     base, ext = name.rsplit(".", 1) if "." in name else (name, "")
     ts = time.strftime("%Y%m%d-%H%M%S")
     return f"{base}-{ts}.tar.gz"
-
 
 def sh(cmd, check=True, capture=False):
     print(f"[sh] {' '.join(cmd) if isinstance(cmd, list) else cmd}", file=sys.stderr)
@@ -50,24 +30,18 @@ def sh(cmd, check=True, capture=False):
         return r.stdout.strip()
     return None
 
-
 def aliyun(*args, capture=False):
     return sh(["aliyun", *args], capture=capture)
 
-
-# Markers indicating the OSS *service* is not activated on the account (as opposed
-# to a bucket/permission error). Covers EN + CN CLI/API wordings.
 _OSS_NOT_ACTIVATED_MARKERS = (
     "not enabled", "not activated", "not been opened", "has not opened",
     "nosuchservice", "please activate", "service is not open",
     "未开通", "请先开通",
 )
 
-
 def _oss_service_not_activated(text: str) -> bool:
     t = (text or "").lower()
     return any(m in t for m in _OSS_NOT_ACTIVATED_MARKERS)
-
 
 def _activate_oss_service() -> bool:
     """Best-effort auto-activation of the OSS service (free; usage billed).
@@ -87,7 +61,6 @@ def _activate_oss_service() -> bool:
           "https://oss.console.aliyun.com/ then retry.", file=sys.stderr)
     return False
 
-
 def ensure_bucket(region: str, bucket: str | None) -> str:
     created = False
     if not bucket:
@@ -98,12 +71,10 @@ def ensure_bucket(region: str, bucket: str | None) -> str:
             ["aliyun", "oss", "mb", f"oss://{bucket}/", "--region", region],
             capture_output=True, text=True)
 
-    # mb is not idempotent: errors if bucket exists. Distinguish cases: created /
-    # already exists (reuse) / service-not-activated (auto-activate + retry) / real failure.
     r = _mb()
     combined = (r.stderr + r.stdout).lower()
     if r.returncode != 0 and _oss_service_not_activated(combined):
-        # Second line of defense (check_env.sh normally handles this first).
+        # Second line of defense (env check flow normally handles this first).
         if not _activate_oss_service():
             raise SystemExit(2)
         r = _mb()
@@ -124,13 +95,11 @@ def ensure_bucket(region: str, bucket: str | None) -> str:
 
     return bucket
 
-
 def _set_bucket_tag(bucket: str):
     subprocess.run(
         ["aliyun", "oss", "bucket-tagging", "--method", "put",
          f"oss://{bucket}/", "from#qwencloud"],
         capture_output=True, text=True)
-
 
 def _set_bucket_lifecycle(bucket: str, region: str):
     lifecycle_xml = (
@@ -154,11 +123,9 @@ def _set_bucket_lifecycle(bucket: str, region: str):
     finally:
         os.unlink(tmp.name)
 
-
 def to_internal_url(url: str) -> str:
     """Convert OSS public URL to internal endpoint (VPC-reachable, free traffic)."""
     return re.sub(r"oss-([a-z0-9-]+)\.aliyuncs\.com", r"oss-\1-internal.aliyuncs.com", url)
-
 
 def upload(bucket: str, local: Path, key: str, internal: bool = True) -> str:
     sh(["aliyun", "oss", "cp", str(local), f"oss://{bucket}/{key}", "-f"])
@@ -166,15 +133,22 @@ def upload(bucket: str, local: Path, key: str, internal: bool = True) -> str:
     for tok in url.split():
         if tok.startswith("http"):
             return to_internal_url(tok) if internal else tok
-    return url.strip()
+    # Failing to parse the signed URL must abort immediately. Otherwise an empty
+    # (or garbage) URL lands in the JSON, the template still renders, the stack
+    # still creates successfully, but `curl -fsSL "" -o app.tar.gz` on the ECS
+    # never fetches the artifact — symptom is "public IP works, app never comes
+    # up", which is very hard to diagnose.
+    raise SystemExit(
+        f"Could not parse a signed URL from `aliyun oss sign` output "
+        f"(oss://{bucket}/{key}). CLI output:\n{url}"
+    )
 
-
-# Skip these directories/files during packaging to avoid bloat from node_modules / .git etc:
+# Skip these dirs/files when packing, to keep node_modules / .git and other bulk out of the archive:
 # 1) Slows down upload and ECS download; 2) macOS node_modules contain native extensions (sharp/bcrypt etc),
-# which won't work on Linux ECS anyway; UserData will `npm ci --omit=dev` on ECS.
+# which won't work on Linux ECS anyway; UserData reinstalls dependencies on the ECS side.
 TAR_EXCLUDE_DIR_NAMES = {
     "node_modules", ".git", "__pycache__", ".venv", "venv",
-    ".pytest_cache", ".mypy_cache", ".tox",
+
     ".idea", ".vscode",
 }
 # Only match relative path segments (exact match to avoid false positives on same-named dirs)
@@ -184,7 +158,6 @@ TAR_EXCLUDE_REL_PATHS = {
     "build/test-results",
 }
 TAR_EXCLUDE_FILE_NAMES = {".DS_Store", "Thumbs.db"}
-
 
 def _tar_filter(ti: "tarfile.TarInfo"):
     # ti.name looks like "./node_modules/foo" or "node_modules/foo"
@@ -198,22 +171,20 @@ def _tar_filter(ti: "tarfile.TarInfo"):
         return None
     return ti
 
-
 def tar_dir(src: Path, dest: Path, arcname: str = "."):
     with tarfile.open(dest, "w:gz") as t:
         t.add(str(src), arcname=arcname, filter=_tar_filter)
-
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--region", required=True)
     ap.add_argument("--bucket", default=None)
-    ap.add_argument("--frontend-dir", default=None, help="Local frontend build artifact directory")
-    ap.add_argument("--backend-mode", default=None,
+    ap.add_argument("--static-dir", default=None, help="Local static build artifact directory")
+    ap.add_argument("--app-mode", default=None,
                     choices=["docker-image", "docker-compose", "binary", "skip"],
-                    help="Use skip if backend artifact is not needed")
-    ap.add_argument("--backend-dir", default=None)
-    ap.add_argument("--backend-image-name", default=None,
+                    help="Use skip if app artifact is not needed")
+    ap.add_argument("--app-dir", default=None)
+    ap.add_argument("--app-image-name", default=None,
                     help="Local image to docker save in docker-image mode")
     ap.add_argument("--template-file", default=None,
                     help="ROS template file path, uploaded to OSS to output template_url (for --TemplateURL to avoid WAF)")
@@ -223,39 +194,39 @@ def main():
 
     bucket = ensure_bucket(args.region, args.bucket)
     internal = not args.no_internal
-    out = {"bucket": bucket, "frontend_url": None, "backend_url": None, "template_url": None}
+    out = {"bucket": bucket, "static_url": None, "app_url": None, "template_url": None}
 
     with tempfile.TemporaryDirectory(prefix="qwencloud-pack-") as tmpdir:
         tmp = Path(tmpdir)
 
-        # Frontend
-        if args.frontend_dir:
-            fdir = Path(args.frontend_dir).resolve()
+        # Static
+        if args.static_dir:
+            fdir = Path(args.static_dir).resolve()
             if not fdir.is_dir():
-                raise SystemExit(f"frontend-dir does not exist: {fdir}")
-            fpack = tmp / "frontend.tar.gz"
+                raise SystemExit(f"static-dir does not exist: {fdir}")
+            fpack = tmp / "static.tar.gz"
             tar_dir(fdir, fpack, arcname=".")
-            out["frontend_url"] = upload(bucket, fpack, _ts_key("frontend"), internal=internal)
+            out["static_url"] = upload(bucket, fpack, _ts_key("static"), internal=internal)
 
-        # Backend
-        if args.backend_mode and args.backend_mode != "skip":
-            bpack = tmp / "backend.tar.gz"
+        # App
+        if args.app_mode and args.app_mode != "skip":
+            bpack = tmp / "app.tar.gz"
 
-            if args.backend_mode == "docker-image":
-                if not args.backend_image_name:
-                    raise SystemExit("docker-image mode requires --backend-image-name")
+            if args.app_mode == "docker-image":
+                if not args.app_image_name:
+                    raise SystemExit("docker-image mode requires --app-image-name")
                 img_tar = tmp / "image.tar"
-                sh(["docker", "save", "-o", str(img_tar), args.backend_image_name])
+                sh(["docker", "save", "-o", str(img_tar), args.app_image_name])
                 with tarfile.open(bpack, "w:gz") as t:
                     t.add(str(img_tar), arcname="image.tar")
-            elif args.backend_mode == "docker-compose":
-                bdir = Path(args.backend_dir or ".").resolve()
+            elif args.app_mode == "docker-compose":
+                bdir = Path(args.app_dir or ".").resolve()
                 tar_dir(bdir, bpack, arcname=".")
-            elif args.backend_mode == "binary":
-                bdir = Path(args.backend_dir or ".").resolve()
+            elif args.app_mode == "binary":
+                bdir = Path(args.app_dir or ".").resolve()
                 tar_dir(bdir, bpack, arcname=".")
 
-            out["backend_url"] = upload(bucket, bpack, _ts_key("backend"), internal=internal)
+            out["app_url"] = upload(bucket, bpack, _ts_key("app"), internal=internal)
 
         # Template upload (avoid --TemplateBody being blocked by WAF)
         if args.template_file:
@@ -265,7 +236,6 @@ def main():
             out["template_url"] = upload(bucket, tpl, "template.yaml", internal=False)
 
     print(json.dumps(out, ensure_ascii=False))
-
 
 if __name__ == "__main__":
     main()

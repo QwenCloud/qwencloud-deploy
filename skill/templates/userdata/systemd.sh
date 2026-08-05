@@ -1,22 +1,22 @@
 #!/bin/bash
-# qwencloud · Native binary backend + systemd
+# qwencloud · systemd managed app
 # Placeholders:
-#   __BACKEND_ARTIFACT_URL__   OSS signed URL of backend artifact tar.gz
-#   __BACKEND_RUNTIME__        binary | java | node | python
-#   __BACKEND_ENTRY__          Full startup command (relative to /opt/qwencloud), e.g.
+#   __APP_ARTIFACT_URL__   OSS signed URL of app artifact tar.gz
+#   __APP_RUNTIME__        none | java | node | python
+#   __START_COMMAND__          Full startup command (relative to /opt/qwencloud), e.g.
 #                              ./server / "python3 app.py" / "java -jar app.jar" /
 #                              "node server.js" / "gunicorn -b :8080 app:app"
-#   __BACKEND_PORT__           Backend listening port
+#   __APP_PORT__           App listening port
 set -euxo pipefail
 
 LOG=/var/log/qwencloud-bootstrap.log
 exec >> "$LOG" 2>&1
 echo "[$(date -u +%FT%TZ)] === qwencloud systemd bootstrap start ==="
 
-BACKEND_URL="__BACKEND_ARTIFACT_URL__"
-RUNTIME="__BACKEND_RUNTIME__"
-ENTRY="__BACKEND_ENTRY__"
-PORT="__BACKEND_PORT__"
+APP_URL="__APP_ARTIFACT_URL__"
+RUNTIME="__APP_RUNTIME__"
+ENTRY="__START_COMMAND__"
+PORT="__APP_PORT__"
 
 # 1. Install runtime
 case "$RUNTIME" in
@@ -54,20 +54,20 @@ case "$RUNTIME" in
       yum install -y python3 python3-pip
     fi
     ;;
-  binary)
-    : # Statically-linked binary, no runtime needed
+  none)
+    : # No runtime installation needed (static binary, or runtime already exists)
     ;;
   *)
-    echo "unknown runtime: $RUNTIME"; exit 1
+    echo "[warn] unknown runtime '$RUNTIME', skipping runtime install"
     ;;
 esac
 
 # 2. Pull artifacts
 mkdir -p /opt/qwencloud
 cd /opt/qwencloud
-curl -fsSL "$BACKEND_URL" -o backend.tar.gz
-tar -xzf backend.tar.gz
-rm -f backend.tar.gz
+curl -fsSL "$APP_URL" -o app.tar.gz
+tar -xzf app.tar.gz
+rm -f app.tar.gz
 
 # 2b. Java JAR-name safeguard: Maven/Gradle usually produce a version-stamped JAR name,
 # but ENTRY often hardcodes a fixed name such as "java -jar app.jar". If ENTRY references
@@ -89,7 +89,7 @@ if [ "$RUNTIME" = "java" ]; then
       echo "[info] JAR '$WANT_BASE' not found; linking real JAR: $REAL_JAR -> /opt/qwencloud/$WANT_BASE"
       ln -sf "$REAL_JAR" "/opt/qwencloud/$WANT_BASE"
     else
-      echo "[error] no runnable JAR found under /opt/qwencloud; backend will fail to start"
+      echo "[error] no runnable JAR found under /opt/qwencloud; app will fail to start"
     fi
   fi
 fi
@@ -154,4 +154,4 @@ systemctl daemon-reload
 systemctl enable qwencloud-app
 systemctl restart qwencloud-app
 
-echo "[$(date -u +%FT%TZ)] systemd backend up"
+echo "[$(date -u +%FT%TZ)] systemd app up"

@@ -25,8 +25,8 @@ Parameters:
     MaxValue: 500
   ZoneId:
     Type: String
-    Description: Availability zone ID (select a zone with stock from check_stock.sh output)
-  BackendPort:
+    Description: Availability zone ID (select a zone with stock from the stock check, see reference/deploy/08_check_stock.md)
+  AppPort:
     Type: Number
     Default: 8080
   DbInstanceClass:
@@ -90,12 +90,6 @@ Resources:
       VpcId:
         Ref: Vpc
       SecurityGroupIngress:
-        # WARNING: SSH is open to the public internet; after deployment, consider restricting to specific IPs or VPN CIDR
-        - PortRange: 22/22
-          Priority: 1
-          IpProtocol: tcp
-          SourceCidrIp: 0.0.0.0/0
-          NicType: intranet
         - PortRange: 80/80
           Priority: 1
           IpProtocol: tcp
@@ -199,9 +193,17 @@ Resources:
           - |
             #!/bin/bash
             set -euxo pipefail
+            # The bootstrap log may contain database connection details; create it
+            # with tight permissions before writing (the default umask yields 644,
+            # readable by any local user).
+            install -m 600 /dev/null /var/log/qwencloud-bootstrap.log 2>/dev/null || \
+              { touch /var/log/qwencloud-bootstrap.log; chmod 600 /var/log/qwencloud-bootstrap.log; }
             exec >> /var/log/qwencloud-bootstrap.log 2>&1
             echo "[$(date -u +%FT%TZ)] === qwencloud bootstrap (with RDS) start ==="
 
+            # Disable xtrace while writing/loading the password, otherwise -x
+            # echoes DB_PASSWORD in cleartext into the log.
+            set +x
             mkdir -p /etc/qwencloud
             cat > /etc/qwencloud/db.env <<DBENV
             DATABASE_URL="mysql://${DbAccount}:${DbPassword}@${RdsAddr}:${RdsPort}/${DbName}"
@@ -216,6 +218,8 @@ Resources:
             set -a
             . /etc/qwencloud/db.env
             set +a
+            set -x
+            echo "[bootstrap] /etc/qwencloud/db.env written (contents omitted)"
 
             # ↓↓↓ generate_template.py injects base64-encoded bootstrap script (decoded and sourced at runtime, inheriting db.env) ↓↓↓
             __USERDATA_BODY__
@@ -256,7 +260,7 @@ Resources:
 
 Outputs:
   PublicIp:
-    Description: Public access IP (frontend http://<IP>/, backend http://<IP>/api/)
+    Description: Public access IP (static http://<IP>/, app http://<IP>/api/)
     Value:
       Fn::GetAtt:
         - Eip

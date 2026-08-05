@@ -1,36 +1,5 @@
 #!/usr/bin/env python3
-"""
-Assemble final ROS template: based on templates/ros_single[_rds].yaml skeleton,
-inject templates/userdata/*.sh snippets by app_type (with placeholder substitution).
-
-Without RDS path:
-  - Template written as-is (UserData passed as Parameter)
-  - UserData assembled into standalone file, passed by create_stack.sh as UserDataScript parameter
-
-With RDS path (--with-rds):
-  - Use *_rds.yaml template (ECS UserData field is Fn::Sub block with __USERDATA_BODY__ placeholder)
-  - After assembling UserData body, base64-encode and inject at template __USERDATA_BODY__ position.
-    At runtime, first write db.env (RDS vars substituted by Fn::Sub), then decode + source main script.
-    This way Fn::Sub never touches shell variables, avoiding unreliable ${!VAR} issues.
-  - --userdata-output is ignored with --with-rds (UserData is inlined in template via base64)
-
-Usage examples:
-  # Without RDS (artifact URLs read directly from upload_artifacts.py JSON output, no manual pasting)
-  python upload_artifacts.py --region ap-southeast-1 --frontend-dir dist \\
-    --backend-mode binary --backend-dir backend > /tmp/artifacts.json
-  python generate_template.py --topology single --app-type binary-go \\
-    --backend-port 8080 --backend-entry ./server \\
-    --artifacts-json /tmp/artifacts.json \\
-    --output /tmp/tpl.yaml --userdata-output /tmp/userdata.sh
-  # Or pipe directly: upload_artifacts.py ... | generate_template.py ... --artifacts-json -
-
-  # With RDS (password passed via DB_PASSWORD env var, not command line)
-  DB_PASSWORD='Strong_P@ss1' python generate_template.py --topology single --app-type binary-go \\
-    --backend-port 8080 --backend-entry ./server \\
-    --frontend-artifact-url "https://..." --backend-artifact-url "https://..." \\
-    --with-rds --db-name appdb --db-account appuser \\
-    --output /tmp/tpl.yaml --userdata-output /tmp/userdata.sh
-"""
+"""Assemble ROS template + UserData script. See reference/deploy/07_generate_template.md"""
 from __future__ import annotations
 
 import argparse
@@ -53,47 +22,57 @@ def load_skeleton(topology: str, with_rds: bool) -> str:
 
 
 def build_userdata(app_type: str, args) -> str:
-    parts = ["#!/bin/bash", "set -euxo pipefail", "exec >> /var/log/qwencloud-bootstrap.log 2>&1"]
+    # The bootstrap log records curl commands with OSS signed URLs (expanded by set -x);
+    # the default umask yields 644, readable by any local user on the ECS instance ->
+    # leaks OSSAccessKeyId/Signature. Symmetric with *_rds.yaml: create the log at 600
+    # before exec. All userdata sub-scripts append to the same file, preserving the mode.
+    parts = [
+        "#!/bin/bash",
+        "set -euxo pipefail",
+        "install -m 600 /dev/null /var/log/qwencloud-bootstrap.log 2>/dev/null || "
+        "{ touch /var/log/qwencloud-bootstrap.log; chmod 600 /var/log/qwencloud-bootstrap.log; }",
+        "exec >> /var/log/qwencloud-bootstrap.log 2>&1",
+    ]
 
-    nginx_mode = getattr(args, "nginx_mode", "static-proxy")
+    nginx_mode = getattr(args, "nginx_mode", "static+app")
 
     if nginx_mode == "proxy":
         nginx = (TPL_DIR / "userdata" / "nginx_proxy.sh").read_text(encoding="utf-8")
-        nginx = nginx.replace("__BACKEND_PORT__", str(args.backend_port))
+        nginx = nginx.replace("__APP_PORT__", str(args.app_port))
         parts.append("# --- nginx: proxy (server-rendered) ---")
         parts.append(nginx)
     elif nginx_mode == "static":
         nginx = (TPL_DIR / "userdata" / "nginx_static.sh").read_text(encoding="utf-8")
-        nginx = nginx.replace("__FRONTEND_ARTIFACT_URL__", args.frontend_artifact_url or "")
-        parts.append("# --- nginx: static (no backend) ---")
+        nginx = nginx.replace("__STATIC_ARTIFACT_URL__", args.static_artifact_url or "")
+        parts.append("# --- nginx: static (no app) ---")
         parts.append(nginx)
     else:
         nginx = (TPL_DIR / "userdata" / "nginx_static_proxy.sh").read_text(encoding="utf-8")
-        nginx = nginx.replace("__FRONTEND_ARTIFACT_URL__", args.frontend_artifact_url or "")
-        nginx = nginx.replace("__BACKEND_PORT__", str(args.backend_port))
-        parts.append("# --- nginx: static-proxy (frontend + api) ---")
+        nginx = nginx.replace("__STATIC_ARTIFACT_URL__", args.static_artifact_url or "")
+        nginx = nginx.replace("__APP_PORT__", str(args.app_port))
+        parts.append("# --- nginx: static+app (static + api) ---")
         parts.append(nginx)
 
-    # Backend snippet
-    if app_type == "frontend-only":
+
+    if app_type == "static-only":
         pass
     elif app_type == "docker":
-        backend = (TPL_DIR / "userdata" / "docker.sh").read_text(encoding="utf-8")
-        backend = backend.replace("__BACKEND_ARTIFACT_URL__", args.backend_artifact_url or "")
-        backend = backend.replace("__BACKEND_MODE__", args.backend_mode or "docker-image")
-        backend = backend.replace("__BACKEND_PORT__", str(args.backend_port))
-        backend = backend.replace("__BACKEND_IMAGE_NAME__", args.backend_image_name or "qwencloud-app:latest")
-        parts.append("# --- backend: docker ---")
-        parts.append(backend)
-    elif app_type.startswith("binary-"):
-        runtime = {"binary-go": "binary", "binary-java": "java", "binary-node": "node", "binary-python": "python"}[app_type]
-        backend = (TPL_DIR / "userdata" / "systemd.sh").read_text(encoding="utf-8")
-        backend = backend.replace("__BACKEND_ARTIFACT_URL__", args.backend_artifact_url or "")
-        backend = backend.replace("__BACKEND_RUNTIME__", runtime)
-        backend = backend.replace("__BACKEND_ENTRY__", args.backend_entry or "./server")
-        backend = backend.replace("__BACKEND_PORT__", str(args.backend_port))
-        parts.append(f"# --- backend: {app_type} ---")
-        parts.append(backend)
+        app_script = (TPL_DIR / "userdata" / "docker.sh").read_text(encoding="utf-8")
+        app_script = app_script.replace("__APP_ARTIFACT_URL__", args.app_artifact_url or "")
+        app_script = app_script.replace("__APP_MODE__", args.app_mode or "docker-image")
+        app_script = app_script.replace("__APP_PORT__", str(args.app_port))
+        app_script = app_script.replace("__APP_IMAGE_NAME__", args.app_image_name or "qwencloud-app:latest")
+        parts.append("# --- app: docker ---")
+        parts.append(app_script)
+    elif app_type == "systemd":
+        runtime = getattr(args, "runtime", None) or "none"
+        app_script = (TPL_DIR / "userdata" / "systemd.sh").read_text(encoding="utf-8")
+        app_script = app_script.replace("__APP_ARTIFACT_URL__", args.app_artifact_url or "")
+        app_script = app_script.replace("__APP_RUNTIME__", runtime)
+        app_script = app_script.replace("__START_COMMAND__", args.start_command or "./server")
+        app_script = app_script.replace("__APP_PORT__", str(args.app_port))
+        parts.append(f"# --- app: systemd (runtime={runtime}) ---")
+        parts.append(app_script)
     else:
         print(f"unknown app_type: {app_type}", file=sys.stderr)
         sys.exit(2)
@@ -141,22 +120,25 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--topology", choices=["single"], default="single")
     ap.add_argument("--app-type", required=True,
-                    choices=["frontend-only", "docker", "binary-go", "binary-java", "binary-node", "binary-python"])
-    ap.add_argument("--backend-port", type=int, default=8080)
-    ap.add_argument("--frontend-artifact-url", default="")
-    ap.add_argument("--backend-artifact-url", default="")
+                    choices=["static-only", "docker", "systemd"])
+    ap.add_argument("--app-port", type=int, default=8080)
+    ap.add_argument("--runtime", default="none",
+                    choices=["none", "java", "node", "python"],
+                    help="Runtime installation (systemd only): none=skip (static binary), java/node/python=auto install")
+    ap.add_argument("--static-artifact-url", default="")
+    ap.add_argument("--app-artifact-url", default="")
     ap.add_argument("--artifacts-json", default=None,
                     help="JSON output from upload_artifacts.py (file path, or - for stdin); "
-                         "automatically extracts frontend_url / backend_url, avoiding manual pasting of long signed URLs. "
-                         "Explicit --frontend-artifact-url / --backend-artifact-url take priority.")
-    ap.add_argument("--backend-mode", default="docker-image", choices=["docker-image", "docker-compose"])
-    ap.add_argument("--backend-image-name", default="")
-    ap.add_argument("--backend-entry", default="",
+                         "automatically extracts static_url / app_url, avoiding manual pasting of long signed URLs. "
+                         "Explicit --static-artifact-url / --app-artifact-url take priority.")
+    ap.add_argument("--app-mode", default="docker-image", choices=["docker-image", "docker-compose"])
+    ap.add_argument("--app-image-name", default="")
+    ap.add_argument("--start-command", default="",
                     help="Full startup command (relative to /opt/qwencloud), e.g. ./server / "
                          "\"python3 app.py\" / \"java -jar app.jar\" / \"node server.js\" / "
                          "\"gunicorn -b :8080 app:app\". This is the exact command that will be exec'd.")
-    ap.add_argument("--nginx-mode", default="static-proxy", choices=["static-proxy", "proxy", "static"],
-                    help="static-proxy: static frontend + /api/ reverse proxy (default); proxy: full reverse proxy to backend (Flask/Django etc); static: pure static hosting")
+    ap.add_argument("--nginx-mode", default="static+app", choices=["static+app", "proxy", "static"],
+                    help="static+app: static files + /api/ reverse proxy (default); proxy: full reverse proxy to app (Flask/Django etc); static: pure static hosting")
     ap.add_argument("--output", required=True)
     ap.add_argument("--userdata-output", required=True,
                     help="Write UserData to this file when no RDS; with RDS this path only gets a placeholder comment")
@@ -169,14 +151,12 @@ def main():
     ap.add_argument("--db-instance-storage", type=int, default=20)
     args = ap.parse_args()
 
-    # RDS password existence validated via DB_PASSWORD env var (actual injection by create_stack.sh via ROS Parameter);
-    # not via command line args, to avoid leaking plaintext in ps process list.
+    # Validate DB_PASSWORD env var
     if args.with_rds and not os.environ.get("DB_PASSWORD"):
         print("--with-rds requires DB_PASSWORD environment variable", file=sys.stderr)
         sys.exit(64)
 
-    # Directly consume upload_artifacts.py JSON output, pipe signed URLs in (no manual pasting).
-    # Explicit --frontend-artifact-url / --backend-artifact-url take priority when non-empty.
+    # Consume artifacts-json
     if args.artifacts_json:
         raw = sys.stdin.read() if args.artifacts_json == "-" \
             else Path(args.artifacts_json).read_text(encoding="utf-8")
@@ -185,10 +165,10 @@ def main():
         except Exception as e:
             print(f"--artifacts-json parse failed: {e}", file=sys.stderr)
             sys.exit(64)
-        if not args.frontend_artifact_url:
-            args.frontend_artifact_url = art.get("frontend_url") or ""
-        if not args.backend_artifact_url:
-            args.backend_artifact_url = art.get("backend_url") or ""
+        if not args.static_artifact_url:
+            args.static_artifact_url = art.get("static_url") or ""
+        if not args.app_artifact_url:
+            args.app_artifact_url = art.get("app_url") or ""
 
     skeleton = load_skeleton(args.topology, args.with_rds)
     userdata = build_userdata(args.app_type, args)
