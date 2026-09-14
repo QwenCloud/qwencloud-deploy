@@ -26,6 +26,8 @@
 - 🚀 **Deploy local projects in one step** — Simply tell your Agent to “deploy this project.” It will automatically select a suitable deployment plan, orchestrate the required resources, and bring your application online on Alibaba Cloud International.
 - 🔗 **Deploy directly from a Git URL** — Provide a Git repository URL and let the Agent clone, build, and deploy it automatically—no local checkout required.
 - 🔥 **Seamless updates** — After modifying your project, simply ask the Agent to “update the project” to publish the latest version.
+- 📊 **Observability** — After deployment, say “observe this app” for a read-only checkup of availability, performance, and cost, with a health score and an exportable report.
+- 🛠️ **Ops diagnosis** — When the app is down/slow/erroring, say “diagnose this app” to locate the faulty layer and run a safe recovery after your confirmation.
 - 🌐 **Domain & HTTPS** — Register a domain, configure DNS, and obtain a free Let's Encrypt SSL certificate—all handled by the Agent in one flow.
 - 💰 **Pay as you go** — Pay only for the resources you use (billed in USD) and release them at any time.
 - 🤖 **Works with multiple Agents** — Compatible with a wide range of Agents that support [Agent Skills](https://agentskills.io). Install it and start deploying right away.
@@ -89,54 +91,62 @@
 npx skills add QwenCloud/qwencloud-deploy
 ```
 
-### Let Your Agent Handle It (Recommended)
+A single install gives you three skills: **deploy · observe · operate**.
 
-From the directory containing the project you want to deploy, send the following prompt to your AI Agent:
+### Usage
 
-```
-Deploy this project to the cloud
-```
+From a deployed project directory, trigger a capability with one sentence; the Agent guides you and asks for confirmation at key steps.
 
-That is all it takes. The Agent will guide you through environment checks, project analysis, instance selection, pricing confirmation, and deployment creation.
+| Goal | Say to the Agent | skill |
+| --- | --- | --- |
+| Deploy to the cloud | Deploy this project to the cloud / Deploy `<Git URL>` to Alibaba Cloud | deploy |
+| Update | Update the app | deploy |
+| Domain + HTTPS | Bind a domain with HTTPS | deploy |
+| Delete | Delete this deployment | deploy |
+| Check how it's running and what it costs | How is this app doing? | observe |
+| Troubleshoot and recover the app | The app won't open, take a look / The site is slow | operate |
 
-You can also provide a Git URL directly:
-
-```
-Deploy https://github.com/user/repo to the cloud
-```
+> observe and operate rely on the `.qwencloud-deploy` state file produced by deploy, so run them from a deployed project directory.
 
 ---
 
-## Deployment Workflow
+## What the three skills do
 
-A full-stack deployment consists of 13 steps. The Agent handles them automatically and asks for your confirmation at key stages:
+### 🚀 deploy
 
-```
-✅ Step 1  · Environment check — aliyun CLI and credential validation
-✅ Step 2  · Git URL processing — clone the remote repository (skipped for local projects)
-✅ Step 3  · Project analysis — detect the project type, framework, and port
-✅ Step 4  · Existing deployment check — look for an existing deployment of the same project
-✅ Step 5  · Database detection — identify database dependencies
-✅ Step 6  · Topology and instance selection — choose your preferred configuration
-✅ Step 7  · Template generation — generate the ROS template and UserData
-✅ Step 8  · Inventory check — confirm that the selected instance type is available
-✅ Step 9  · Validation and pricing — provide an exact quote; billing starts only after confirmation
-✅ Step 10 · Artifact upload — build and upload artifacts to OSS
-✅ Step 11 · Stack creation — use ROS to create all required resources
-✅ Step 12 · Wait & health check — wait until all resources are ready and verify service accessibility
-✅ Step 13 · State recording — save deployment details for future updates
-```
+Deploy a local project or Git repository to Alibaba Cloud International in one step, with updates, HTTPS, and cleanup.
 
-After deployment, you can optionally bind a custom domain with HTTPS:
+- **Full-stack deploy** — analyze the project, orchestrate ECS (+ optional RDS MySQL) + public IP + a temporary OSS bucket, and show an exact USD quote for your confirmation before creating anything.
+- **Hot update** — say "update the app" to publish a new version with the public IP unchanged.
+- **Domain & HTTPS** — register a domain, configure DNS, and obtain a free Let's Encrypt SSL certificate in one flow.
+- **Delete/cleanup** — say "delete this deployment" to release every resource it created (irreversible, double-confirmed).
 
-```
-🌐 H1 · Domain source — use an existing domain or buy a new one
-🌐 H2 · Domain registration — registrant profile, email verification, purchase (new domains only)
-🌐 H3 · DNS configuration — add A record pointing to the server IP
-🌐 H4 · DNS verification — confirm DNS propagation
-🌐 H5 · HTTPS certificate — obtain a free Let's Encrypt certificate via certbot
-🌐 H6 · Verify & update state — confirm HTTPS is working
-```
+### 📊 observe
+
+A **read-only** checkup of a deployed app — "how is it running and what will it cost" — without opening the console.
+
+- **Health score** — score four dimensions (app, ECS, RDS, availability) into a health score and grade, each judgment backed by evidence.
+- **Per-layer overview** — app probe and latency, ECS CPU/memory/load, RDS connections/slow SQL, public entry and security-group exposure.
+- **Cost** — the actual bill broken down by product, with utilization-based optimization notes (no future-spend estimates).
+- **Report export** — export a Markdown / HTML report. On a real fault, hand off to operate in one click.
+
+### 🛠️ operate
+
+Fault diagnosis and **confirm-first** recovery for an app that is down or clearly slow.
+
+- **Diagnosis** — read-only, pinpoints the faulty layer (app / Nginx / ECS / RDS / network / disk) and its error.
+- **Confirm-first recovery** — proposes one recovery action at a time (start ECS, restart the app service, reload Nginx), explains the impact, and runs it only after you confirm.
+- **Closed-loop verification** — re-checks after recovery and reports recovered / partially recovered / not recovered, with an audit record for every write action.
+
+> observe and operate handle infrastructure and runtime only; they do not review or modify your source code — code bugs are yours to fix.
+
+---
+
+## Security
+
+- Passwords are passed via environment variables, never command-line arguments or chat.
+- Deployment adds state files and common AI agent directories to `.gitignore`, keeping their credentials out of the repo.
+- Before committing, confirm no credential-bearing files are tracked, and rotate any exposed key or password.
 
 ---
 
